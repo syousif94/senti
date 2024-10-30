@@ -1,0 +1,80 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    # Ensure git status is clean
+    ensure_git_status_clean
+    
+    # Increment build number
+    increment_build_number(
+      build_number: latest_testflight_build_number + 1
+    )
+    
+    # Update provisioning profiles
+    sync_code_signing(
+      type: "appstore",
+      app_identifier: "me.syousif.Senti"
+    )
+    
+    # Build the app
+    build_app(
+      scheme: "Senti",
+      export_method: "app-store",
+      configuration: "Release",
+      clean: true
+    )
+    
+    # Upload to TestFlight
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true
+    )
+    
+    # Commit version bump
+    commit_version_bump(
+      message: "Build version bump [ci skip]",
+      xcodeproj: "Senti.xcodeproj"
+    )
+  end
+
+  desc "Deploy a new version to the App Store"
+  lane :release do
+    # Ensure git status is clean
+    ensure_git_status_clean
+    
+    # Capture changelog from CHANGELOG.md
+    changelog = read_changelog(
+      section_identifier: "[Unreleased]",
+      excluded_markdown_elements: []
+    )
+    
+    # Build the app
+    build_app(
+      scheme: "YourApp",
+      export_method: "app-store",
+      configuration: "Release",
+      clean: true
+    )
+    
+    # Upload to App Store Connect
+    upload_to_app_store(
+      force: true,
+      submit_for_review: true,
+      automatic_release: true,
+      submission_information: {
+        export_compliance_uses_encryption: false,
+        add_id_info_uses_idfa: false
+      },
+      changelog: changelog
+    )
+  end
+
+  desc "Run tests"
+  lane :test do
+    run_tests(
+      scheme: "YourApp",
+      devices: ["iPhone 14"],
+      clean: true
+    )
+  end
+end

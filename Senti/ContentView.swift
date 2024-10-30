@@ -61,7 +61,7 @@ class AudioManager: ObservableObject {
         
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("Failed to set up audio session: \(error.localizedDescription)")
@@ -234,7 +234,7 @@ struct SlidingText: View {
     @State private var yOffset: CGFloat = 20
     
     var body: some View {
-        Text(text)
+        Text(LocalizedStringKey(text))
             .opacity(opacity)
             .offset(y: yOffset)
             .onAppear {
@@ -303,12 +303,12 @@ struct ContentView: View {
                                 .foregroundColor(.primary)
                                 .multilineTextAlignment(.center)
                                 .id(llm.speechQueue.currentSentence)
-                                .padding(.horizontal)
+                                .padding(.horizontal, 40)
                         } else if isFingerOnScreen && !audioManager.currentSpeechText.isEmpty {
                             FadingText(text: audioManager.currentSpeechText)
                                 .foregroundColor(.primary)
                                 .multilineTextAlignment(.center)
-                                .padding(.horizontal)
+                                .padding(.horizontal, 40)
                         } else if isFingerOnScreen {
                             FadingText(text: "Ask me anything")
                                 .foregroundColor(.primary)

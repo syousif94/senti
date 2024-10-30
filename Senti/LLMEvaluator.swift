@@ -211,29 +211,102 @@ class StreamSentenceSplitter {
     private var currentSentence: String = ""
     private let sentenceTerminators: [Character] = [".", "!", "?"]
     private let abbreviations: Set<String> = ["st", "mr", "mrs", "dr", "ms", "jr", "sr"]
+    private let punctuatedWords: Set<String> = [
+        "u.s", "u.s.a", "u.k", "e.g", "i.e", "etc", "ph.d", "a.m", "p.m",
+        "b.c", "a.d", "fig", "bros", "dept", "corp", "inc", "co", "vs",
+        "gen", "sen", "rev", "hon", "gov", "lt", "cmdr", "approx", "est",
+        "alt", "def", "n.b", "p.s", "r.s.v.p", "tel", "temp", "vet", "viz"
+    ]
+    private var lastCharacterWasTerminator = false
+    private var lastCharacterWasNewline = false
     
     var sentenceHandler: ((String) -> Void)?
     
     func handleStreamChunk(_ newValue: String) {
         for character in newValue {
-            if sentenceTerminators.contains(character) {
-                if canTerminateSentence(with: character) {
-                    currentSentence.append(character)
+            if character.isNewline {
+                if !currentSentence.isEmpty {
+                    // Send the current sentence if we have one
                     if let handler = sentenceHandler {
                         handler(currentSentence)
                     }
                     currentSentence = ""
+                }
+                lastCharacterWasNewline = true
+                lastCharacterWasTerminator = false
+                continue
+            }
+            
+            if lastCharacterWasNewline {
+                lastCharacterWasNewline = false
+                currentSentence = String(character)
+                continue
+            }
+            
+            if lastCharacterWasTerminator {
+                if character.isWhitespace {
+                    // Check if the last word is a punctuated word
+                    if !isPunctuatedWord() {
+                        if let handler = sentenceHandler {
+                            handler(currentSentence)
+                        }
+                        currentSentence = String(character)
+                    } else {
+                        currentSentence.append(character)
+                    }
                 } else {
                     currentSentence.append(character)
                 }
+                lastCharacterWasTerminator = false
             } else {
-                currentSentence.append(character)
+                if sentenceTerminators.contains(character) {
+                    if canTerminateSentence(with: character) {
+                        currentSentence.append(character)
+                        lastCharacterWasTerminator = true
+                    } else {
+                        currentSentence.append(character)
+                    }
+                } else {
+                    currentSentence.append(character)
+                }
             }
         }
     }
     
     func clear() {
         currentSentence = ""
+        lastCharacterWasTerminator = false
+        lastCharacterWasNewline = false
+    }
+    
+    private func isPunctuatedWord() -> Bool {
+        let words = currentSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ")
+            .map(String.init)
+        
+        guard let lastWord = words.last else { return false }
+        
+        // Remove any trailing punctuation for comparison
+        let cleanedWord = lastWord.trimmingCharacters(in: .punctuationCharacters).lowercased()
+        
+        // Check if it matches known punctuated words
+        if punctuatedWords.contains(cleanedWord) {
+            return true
+        }
+        
+        // Check for capitalized letter patterns with periods (e.g., U.S., A.I.)
+        let components = lastWord.components(separatedBy: ".")
+        if components.count > 1 {
+            // Check if each component is a single capital letter
+            let isAcronym = components.allSatisfy { component in
+                component.count == 1 && component.rangeOfCharacter(from: .uppercaseLetters) != nil
+            }
+            if isAcronym {
+                return true
+            }
+        }
+        
+        return false
     }
     
     private func canTerminateSentence(with terminator: Character) -> Bool {
@@ -273,7 +346,7 @@ class SpeechQueue: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         Self.speechSynthesizer.delegate = self
         
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("Failed to set up audio session for SpeechQueue: \(error.localizedDescription)")
