@@ -275,6 +275,7 @@ struct FadingText: View {
 struct ContentView: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.colorScheme) var colorScheme
+    @Environment(\.scenePhase) var scenePhase  // Add this line
     @StateObject private var audioManager = AudioManager()
     @StateObject private var permissionManager = PermissionManager()
     @State private var showPermissionSheet = false
@@ -288,13 +289,21 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            // Previous view hierarchy remains the same
             ZStack {
                 Color(UIColor.systemBackground).edgesIgnoringSafeArea(.all)
                 
-                VStack(alignment: .center, spacing: 20) {
+                VStack(alignment: .center, spacing: 36) {
                     AnimatedGradientCircle(audioLevel: $audioManager.audioLevel, isFingerOnScreen: $isFingerOnScreen)
                     
-                    if installed {
+                    if !llm.isSupportedCPU {
+                        Text("Your device is unsupported due to RAM constraints")
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 300)
+                            .padding(.horizontal, 48)
+                    }
+                    else if !llm.downloading {
                         if isGenerating && !llm.isSpeaking {
                             FadingText(text: "Thinking")
                                 .foregroundColor(.secondary)
@@ -303,12 +312,14 @@ struct ContentView: View {
                                 .foregroundColor(.primary)
                                 .multilineTextAlignment(.center)
                                 .id(llm.speechQueue.currentSentence)
-                                .padding(.horizontal, 40)
+                                .frame(maxWidth: 300)
+                                .padding(.horizontal, 48)
                         } else if isFingerOnScreen && !audioManager.currentSpeechText.isEmpty {
                             FadingText(text: audioManager.currentSpeechText)
                                 .foregroundColor(.primary)
                                 .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
+                                .frame(maxWidth: 300)
+                                .padding(.horizontal, 48)
                         } else if isFingerOnScreen {
                             FadingText(text: "Ask me anything")
                                 .foregroundColor(.primary)
@@ -322,8 +333,8 @@ struct ContentView: View {
                             .foregroundColor(.primary)
                         ProgressView(value: llm.progress, total: 1)
                             .progressViewStyle(.linear)
+                            .frame(maxWidth: 200)
                             .padding(.horizontal, 48)
-                            .position(x: geometry.size.width / 2, y: geometry.size.height / 2 + 140)
                     }
                 }
             }
@@ -340,6 +351,12 @@ struct ContentView: View {
                         handleFingerUp()
                     }
             )
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase != .active {
+                isFingerOnScreen = false
+                handleFingerUp()
+            }
         }
         .onAppear {
             let _ = isInstalled()
@@ -368,6 +385,7 @@ struct ContentView: View {
         .ignoresSafeArea(.all)
     }
     
+    // Rest of the methods remain unchanged
     private func handleFingerDown() {
         playHaptic()
         llm.cancelGeneration()
@@ -420,7 +438,7 @@ struct ContentView: View {
                 
                 if let currentThread = currentThread {
                     sendMessage(Message(role: .user, content: segment, thread: currentThread))
-                    let output = await llm.generate(modelName: ModelConfiguration.defaultModel.name, systemPrompt: "You are helpful voice assistant. Respond using natural sounding dialogue.", thread: currentThread)
+                    let output = await llm.generate(modelName: ModelConfiguration.defaultModel.name, systemPrompt: "You are helpful voice assistant called Senti. Respond using natural sounding dialogue.", thread: currentThread)
                     if !output.isEmpty {
                         sendMessage(Message(role: .assistant, content: output, thread: currentThread))
                     }
@@ -457,6 +475,7 @@ struct ContentView: View {
         return installed && llm.progress == 1
     }
 }
+
 
 #Preview {
     ContentView()

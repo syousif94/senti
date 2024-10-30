@@ -16,10 +16,10 @@ enum Role: String, Codable {
 
 @Model
 class Message {
-    @Attribute(.unique) var id: UUID
-    var role: Role
-    var content: String
-    var timestamp: Date
+    var id: UUID = UUID()
+    var role: Role = Role.user
+    var content: String = ""
+    var timestamp: Date = Date()
     
     @Relationship(inverse: \Thread.messages) var thread: Thread?
     
@@ -34,14 +34,14 @@ class Message {
 
 @Model
 class Thread {
-    @Attribute(.unique) var id: UUID
-    var title: String?
-    var timestamp: Date
+    var id: UUID = UUID()
+    var title: String? = nil
+    var timestamp: Date = Date()
     
-    @Relationship var messages: [Message] = []
+    @Relationship var messages: [Message]? = []
     
     var sortedMessages: [Message] {
-        return messages.sorted { $0.timestamp < $1.timestamp }
+        return messages?.sorted { $0.timestamp < $1.timestamp } ?? []
     }
     
     init() {

@@ -12,6 +12,7 @@ import SwiftUI
 import AVFoundation
 import Speech
 import Accelerate
+import Hub
 
 @Observable
 @MainActor
@@ -21,6 +22,9 @@ class LLMEvaluator: ObservableObject {
     var modelInfo = ""
     var stat = ""
     var progress = 0.0
+
+    var downloading = false
+    var isSupportedCPU: Bool
 
     var modelConfiguration = ModelConfiguration.defaultModel
     
@@ -34,6 +38,8 @@ class LLMEvaluator: ObservableObject {
     var isSpeaking = false
     
     init() {
+        isSupportedCPU = isSupportedHardware()
+        
         streamSentenceSplitter.sentenceHandler = { [weak self] sentence in
             self?.speechQueue.enqueue(sentence: sentence)
         }
@@ -48,9 +54,16 @@ class LLMEvaluator: ObservableObject {
             self?.toggleIdleTimer(disable: false)
             self?.audioManager?.resumeListening()
         }
+        
+        if isSupportedCPU {
+            downloading = !HubApi.modelExists(modelPath: ModelConfiguration.defaultModel.name)
+        }
     }
 
     func switchModel(_ model: ModelConfiguration) async {
+        if !isSupportedCPU {
+            return
+        }
         progress = 0.0 // reset progress
         loadState = .idle
         modelConfiguration = model
@@ -79,6 +92,7 @@ class LLMEvaluator: ObservableObject {
             {
                 [modelConfiguration] progress in
                 Task { @MainActor in
+                    self.downloading = progress.fractionCompleted < 1
                     self.modelInfo =
                         "Downloading \(modelConfiguration.name): \(Int(progress.fractionCompleted * 100))%"
                     self.progress = progress.fractionCompleted
@@ -155,6 +169,8 @@ class LLMEvaluator: ObservableObject {
                     self.output = result.output
                     if self.currentGenerationId == generationId, !newChunk.isEmpty {
                         self.streamSentenceSplitter.handleStreamChunk(newChunk)
+                        // Call finalize after the last chunk
+                        self.streamSentenceSplitter.finalize()
                     }
                 }
                 self.stat = " Tokens/second: \(String(format: "%.3f", result.tokensPerSecond))"
@@ -270,6 +286,27 @@ class StreamSentenceSplitter {
                     currentSentence.append(character)
                 }
             }
+        }
+        
+        // Handle the final sentence if it ends with a terminator
+        if lastCharacterWasTerminator && !currentSentence.isEmpty {
+            if !isPunctuatedWord() {
+                if let handler = sentenceHandler {
+                    handler(currentSentence)
+                }
+                currentSentence = ""
+                lastCharacterWasTerminator = false
+            }
+        }
+    }
+    
+    func finalize() {
+        // If there's any remaining text, emit it as a final sentence
+        if !currentSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let handler = sentenceHandler {
+                handler(currentSentence)
+            }
+            currentSentence = ""
         }
     }
     
@@ -420,4 +457,117 @@ class SpeechQueue: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             }
         }
     }
+}
+
+extension HubApi {
+    public static func listHuggingFaceFiles() -> String {
+        var output = "huggingface/\n"
+        let fileManager = FileManager.default
+        
+        func recursiveList(at path: URL, indent: String = "") {
+            do {
+                let contents = try fileManager.contentsOfDirectory(at: path,
+                                                                 includingPropertiesForKeys: [.isDirectoryKey],
+                                                                 options: [.skipsHiddenFiles])
+                
+                let sortedContents = contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+                for (index, url) in sortedContents.enumerated() {
+                    let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                    let isLast = index == sortedContents.count - 1
+                    
+                    // Use └── for last item, ├── for others
+                    let prefix = isLast ? "└── " : "├── "
+                    output += "\(indent)\(prefix)\(url.lastPathComponent)\n"
+                    
+                    if isDirectory {
+                        // Use space for last item's children, vertical line for others
+                        let newIndent = indent + (isLast ? "    " : "│   ")
+                        recursiveList(at: url, indent: newIndent)
+                    }
+                }
+            } catch {
+                output += "\(indent)Error reading directory: \(error)\n"
+            }
+        }
+        
+        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let huggingfacePath = documents.appendingPathComponent("huggingface")
+            recursiveList(at: huggingfacePath)
+        }
+        
+        return output
+    }
+
+    public static func deleteHuggingFaceFiles() {
+        let fileManager = FileManager.default
+        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let huggingfacePath = documents.appendingPathComponent("huggingface")
+            
+            do {
+                let files = try fileManager.contentsOfDirectory(at: huggingfacePath,
+                                                              includingPropertiesForKeys: nil)
+                for file in files {
+                    try fileManager.removeItem(at: file)
+                    print("Deleted: \(file.lastPathComponent)")
+                }
+            } catch {
+                print("Error deleting files: \(error)")
+            }
+        }
+    }
+    
+    public static func modelExists(modelPath: String) -> Bool {
+        let fileManager = FileManager.default
+        
+        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            print("Could not access documents directory")
+            return false
+        }
+        
+        // Construct the full path
+        let huggingfacePath = documents
+            .appendingPathComponent("huggingface")
+            .appendingPathComponent("models")
+            .appendingPathComponent(modelPath)
+            .appendingPathComponent("model.safetensors")
+        
+        let exists = fileManager.fileExists(atPath: huggingfacePath.path)
+        print("Checking path: \(huggingfacePath.path)")
+        print("File exists: \(exists)")
+        
+        return exists
+    }
+}
+
+func isSupportedHardware() -> Bool {
+    #if os(macOS)
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleARMPlatform"))
+    if service != 0 {
+        IOObjectRelease(service)
+        return true
+    }
+    return false
+    #elseif os(iOS)
+    var sysinfo = utsname()
+    uname(&sysinfo)
+    let modelCode = withUnsafePointer(to: &sysinfo.machine) {
+        $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+            ptr in String(validatingUTF8: ptr)
+        }
+    } ?? ""
+    
+    // Devices that can run iOS 17 but are pre-A14
+    let olderDevices = [
+        // A12 devices
+        "iPhone11,", // XS, XS Max, XR
+        // A13 devices
+        "iPhone12,", // 11, 11 Pro, 11 Pro Max
+        // A12X/Z devices
+        "iPad8,", // 2018/2020 iPad Pro models
+    ]
+    
+    return !olderDevices.contains { modelCode.hasPrefix($0) }
+    #else
+    return false
+    #endif
 }
