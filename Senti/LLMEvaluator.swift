@@ -383,7 +383,7 @@ class SpeechQueue: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         Self.speechSynthesizer.delegate = self
         
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers, .allowBluetooth])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("Failed to set up audio session for SpeechQueue: \(error.localizedDescription)")

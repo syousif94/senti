@@ -12,22 +12,30 @@ import MLXLLM
 import Accelerate
 
 class PermissionManager: ObservableObject {
-    @Published var micPermission: AVAudioSession.RecordPermission = .undetermined
-    @Published var speechPermission: SFSpeechRecognizerAuthorizationStatus = .notDetermined
-    
-    func requestPermissions() {
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-            DispatchQueue.main.async {
-                self?.micPermission = granted ? .granted : .denied
-            }
-        }
-        
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            DispatchQueue.main.async {
-                self?.speechPermission = status
-            }
-        }
-    }
+    @Published var micPermission: AVAudioSession.RecordPermission = AVAudioSession.sharedInstance().recordPermission
+    @Published var speechPermission: SFSpeechRecognizerAuthorizationStatus = SFSpeechRecognizer.authorizationStatus()
+      
+      func requestPermissions() async {
+          // Request microphone permission
+          await withCheckedContinuation { continuation in
+              AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+                  DispatchQueue.main.async {
+                      self?.micPermission = granted ? .granted : .denied
+                  }
+                  continuation.resume()
+              }
+          }
+          
+          // Request speech recognition permission
+          await withCheckedContinuation { continuation in
+              SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                  DispatchQueue.main.async {
+                      self?.speechPermission = status
+                  }
+                  continuation.resume()
+              }
+          }
+      }
     
     var allPermissionsGranted: Bool {
         return micPermission == .granted && speechPermission == .authorized
@@ -61,7 +69,7 @@ class AudioManager: ObservableObject {
         
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers])
+            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers, .allowBluetooth])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("Failed to set up audio session: \(error.localizedDescription)")
@@ -181,53 +189,6 @@ struct AnimatedGradientCircle: View {
     }
 }
 
-struct PermissionView: View {
-    @ObservedObject var permissionManager: PermissionManager
-    
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Permissions Required")
-                .font(.title)
-                .fontWeight(.bold)
-            
-            Text("This app requires microphone and speech recognition permissions to function properly.")
-                .multilineTextAlignment(.center)
-                .padding()
-            
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Image(systemName: permissionManager.micPermission == .granted ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(permissionManager.micPermission == .granted ? .green : .red)
-                    Text("Microphone Access")
-                }
-                
-                HStack {
-                    Image(systemName: permissionManager.speechPermission == .authorized ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(permissionManager.speechPermission == .authorized ? .green : .red)
-                    Text("Speech Recognition")
-                }
-            }
-            .padding()
-            
-            Button(action: {
-                if permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied {
-                    if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(settingsUrl)
-                    }
-                } else {
-                    permissionManager.requestPermissions()
-                }
-            }) {
-                Text(permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied ? "Open Settings" : "Enable Permissions")
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
-        }
-    }
-}
-
 struct SlidingText: View {
     let text: String
     @State private var opacity: Double = 0
@@ -275,10 +236,9 @@ struct FadingText: View {
 struct ContentView: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.colorScheme) var colorScheme
-    @Environment(\.scenePhase) var scenePhase  // Add this line
+    @Environment(\.scenePhase) var scenePhase
     @StateObject private var audioManager = AudioManager()
     @StateObject private var permissionManager = PermissionManager()
-    @State private var showPermissionSheet = false
     @EnvironmentObject var llm: LLMEvaluator
     @State var installed = true
     @State var currentThread: Thread?
@@ -286,10 +246,18 @@ struct ContentView: View {
     @State private var isGenerating = false
     @State private var displayText: String = ""
     @State private var previousText: String = ""
+    @State private var hasCheckedPermissions = false
 
+    var permissionStatusMessage: String {
+        if permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied {
+            return "Please allow microphone and speech recognition in Settings to proceed."
+        } else {
+            return "Please allow microphone and speech recognition permissions to proceed."
+        }
+    }
+    
     var body: some View {
         GeometryReader { geometry in
-            // Previous view hierarchy remains the same
             ZStack {
                 Color(UIColor.systemBackground).edgesIgnoringSafeArea(.all)
                 
@@ -302,8 +270,35 @@ struct ContentView: View {
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 300)
                             .padding(.horizontal, 48)
-                    }
-                    else if !llm.downloading {
+                    } else if !permissionManager.allPermissionsGranted {
+                        Text(permissionStatusMessage)
+                            .lineSpacing(8)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: 300)
+                            .padding(.horizontal, 48)
+                        
+                        Button(action: {
+                            if permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied {
+                                if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(settingsUrl)
+                                }
+                            } else {
+                                Task {
+                                    await permissionManager.requestPermissions() // Request permissions
+                                }
+                            }
+                        }) {
+                            Text("Allow")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .frame(height: 40)
+                                .padding(.horizontal, 32)
+                                .background(Color.blue)
+                                .cornerRadius(20)
+                        }
+                    } else if !llm.downloading {
                         if isGenerating && !llm.isSpeaking {
                             FadingText(text: "Thinking")
                                 .foregroundColor(.secondary)
@@ -341,7 +336,7 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
-                        if !isFingerOnScreen {
+                        if !isFingerOnScreen && permissionManager.allPermissionsGranted {
                             isFingerOnScreen = true
                             handleFingerDown()
                         }
@@ -360,17 +355,17 @@ struct ContentView: View {
         }
         .onAppear {
             let _ = isInstalled()
-            checkAndRequestPermissions()
-            setupAudioManagerHandler()
-            connectAudioManagerToLLMEvaluator()
+            if llm.isSupportedCPU {
+                setupAudioManagerHandler()
+                connectAudioManagerToLLMEvaluator()
+            }
+            
         }
         .onChange(of: permissionManager.allPermissionsGranted) { granted in
-            if granted {
-                showPermissionSheet = false
+            if granted && llm.isSupportedCPU {
                 audioManager.setupAudioEngine()
             } else {
                 audioManager.stopEverything()
-                updatePermissionSheetVisibility()
             }
         }
         .onChange(of: llm.progress) { _ in
@@ -379,13 +374,9 @@ struct ContentView: View {
         .task {
             await loadLLM()
         }
-        .sheet(isPresented: $showPermissionSheet, content: {
-            PermissionView(permissionManager: permissionManager)
-        })
         .ignoresSafeArea(.all)
     }
     
-    // Rest of the methods remain unchanged
     private func handleFingerDown() {
         playHaptic()
         llm.cancelGeneration()
@@ -400,26 +391,17 @@ struct ContentView: View {
         audioManager.stopRecognition()
     }
     
-    private func checkAndRequestPermissions() {
-        if permissionManager.allPermissionsGranted {
-            audioManager.setupAudioEngine()
-        } else if permissionManager.micPermission == .undetermined || permissionManager.speechPermission == .notDetermined {
-            permissionManager.requestPermissions()
-        } else {
-            updatePermissionSheetVisibility()
-        }
-    }
-    
-    private func updatePermissionSheetVisibility() {
-        showPermissionSheet = permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied
-    }
-    
     private func setupAudioManagerHandler() {
         audioManager.onNewSpeechDetected = {
             llm.cancelGeneration()
             audioManager.speechQueue?.cancelSpeech()
             audioManager.resumeListening()
         }
+    }
+    
+    private func connectAudioManagerToLLMEvaluator() {
+        audioManager.speechQueue = llm.speechQueue
+        llm.setAudioManager(audioManager)
     }
     
     private func generate(with segment: String) {
@@ -451,11 +433,6 @@ struct ContentView: View {
     private func sendMessage(_ message: Message) {
         modelContext.insert(message)
         try? modelContext.save()
-    }
-    
-    private func connectAudioManagerToLLMEvaluator() {
-        audioManager.speechQueue = llm.speechQueue
-        llm.setAudioManager(audioManager)
     }
     
     func playHaptic() {
