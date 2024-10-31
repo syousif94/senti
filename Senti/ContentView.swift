@@ -358,6 +358,9 @@ struct ContentView: View {
             if llm.isSupportedCPU {
                 setupAudioManagerHandler()
                 connectAudioManagerToLLMEvaluator()
+                if permissionManager.allPermissionsGranted {
+                    audioManager.setupAudioEngine()
+                }
             }
             
         }
