@@ -102,7 +102,7 @@ class AudioManager: ObservableObject {
         
         let normalizedDecibels = (decibels + 40) / 40
         
-        let scaledLevel = max(0, pow(normalizedDecibels, 0.6))
+        let scaledLevel = max(0, pow(normalizedDecibels, 1.2))
         
         DispatchQueue.main.async {
             self.audioLevel = CGFloat(scaledLevel)
@@ -247,13 +247,18 @@ struct ContentView: View {
     @State private var displayText: String = ""
     @State private var previousText: String = ""
     @State private var hasCheckedPermissions = false
+    @State private var hasAttemptedToSpeak = false
 
     var permissionStatusMessage: String {
         if permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied {
             return "Please allow microphone and speech recognition in Settings to proceed."
         } else {
-            return "Please allow microphone and speech recognition permissions to proceed."
+            return "Senti is a voice assistant that can answer any of your questions, privately and fully offline."
         }
+    }
+    
+    var permissionsDenied: Bool {
+        return permissionManager.micPermission == .denied && permissionManager.speechPermission == .denied
     }
     
     var body: some View {
@@ -270,8 +275,30 @@ struct ContentView: View {
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 300)
                             .padding(.horizontal, 48)
-                    } else if !permissionManager.allPermissionsGranted {
-                        Text(permissionStatusMessage)
+                    } else if !permissionsDenied && !permissionManager.allPermissionsGranted {
+                        Text("Senti is a private voice assistant that can answer questions offline.")
+                            .lineSpacing(8)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: 280)
+                            .padding(.horizontal, 16)
+                        
+                        Button(action: {
+                            Task {
+                                await permissionManager.requestPermissions() // Request permissions
+                            }
+                        }) {
+                            Text("Continue")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .frame(height: 40)
+                                .padding(.horizontal, 32)
+                                .background(Color.blue)
+                                .cornerRadius(20)
+                        }
+                    } else if permissionsDenied && hasAttemptedToSpeak {
+                        Text("Please allow microphone and speech recognition in Settings to proceed.")
                             .lineSpacing(8)
                             .multilineTextAlignment(.center)
                             .foregroundColor(.primary)
@@ -279,17 +306,11 @@ struct ContentView: View {
                             .padding(.horizontal, 48)
                         
                         Button(action: {
-                            if permissionManager.micPermission == .denied || permissionManager.speechPermission == .denied {
-                                if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
-                                    UIApplication.shared.open(settingsUrl)
-                                }
-                            } else {
-                                Task {
-                                    await permissionManager.requestPermissions() // Request permissions
-                                }
+                            if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(settingsUrl)
                             }
                         }) {
-                            Text("Allow")
+                            Text("Open Settings")
                                 .font(.headline)
                                 .fontWeight(.bold)
                                 .foregroundColor(.white)
@@ -336,14 +357,19 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
-                        if !isFingerOnScreen && permissionManager.allPermissionsGranted {
+                        if !isFingerOnScreen {
+                            hasAttemptedToSpeak = true
                             isFingerOnScreen = true
-                            handleFingerDown()
+                            if permissionManager.allPermissionsGranted {
+                                handleFingerDown()
+                            }
                         }
                     }
                     .onEnded { _ in
                         isFingerOnScreen = false
-                        handleFingerUp()
+                        if permissionManager.allPermissionsGranted {
+                            handleFingerUp()
+                        }
                     }
             )
         }
