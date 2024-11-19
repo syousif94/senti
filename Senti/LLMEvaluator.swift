@@ -128,10 +128,8 @@ class LLMEvaluator: ObservableObject {
                 let extraEOSTokens = self.modelConfiguration.extraEOSTokens
 
                 let promptHistory = self.modelConfiguration.getPromptHistory(thread: thread, systemPrompt: systemPrompt)
-                let prompt = self.modelConfiguration.prepare(prompt: promptHistory)
-
-                let promptTokens = await modelContainer.perform { _, tokenizer in
-                    tokenizer.encode(text: prompt)
+                let promptTokens = try await modelContainer.perform { _, tokenizer in
+                    try tokenizer.applyChatTemplate(messages: promptHistory)
                 }
 
                 MLXRandom.seed(UInt64(Date.timeIntervalSinceReferenceDate * 1000))
