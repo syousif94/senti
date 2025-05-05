@@ -95,7 +95,10 @@ class LLMEvaluator: ObservableObject {
                     self.downloading = progress.fractionCompleted < 1
                     self.modelInfo =
                         "Downloading \(modelConfiguration.name): \(Int(progress.fractionCompleted * 100))%"
-                    self.progress = progress.fractionCompleted
+                    if progress.fractionCompleted > self.progress {
+                        self.progress = progress.fractionCompleted
+                    }
+                    
                 }
             }
             self.modelInfo =

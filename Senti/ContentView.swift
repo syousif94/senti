@@ -15,27 +15,27 @@ class PermissionManager: ObservableObject {
     @Published var micPermission: AVAudioSession.RecordPermission = AVAudioSession.sharedInstance().recordPermission
     @Published var speechPermission: SFSpeechRecognizerAuthorizationStatus = SFSpeechRecognizer.authorizationStatus()
       
-      func requestPermissions() async {
-          // Request microphone permission
-          await withCheckedContinuation { continuation in
-              AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-                  DispatchQueue.main.async {
-                      self?.micPermission = granted ? .granted : .denied
-                  }
-                  continuation.resume()
-              }
-          }
-          
-          // Request speech recognition permission
-          await withCheckedContinuation { continuation in
-              SFSpeechRecognizer.requestAuthorization { [weak self] status in
-                  DispatchQueue.main.async {
-                      self?.speechPermission = status
-                  }
-                  continuation.resume()
-              }
-          }
-      }
+    func requestPermissions() async {
+        // Request microphone permission
+        await withCheckedContinuation { continuation in
+            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+                DispatchQueue.main.async {
+                    self?.micPermission = granted ? .granted : .denied
+                }
+                continuation.resume()
+            }
+        }
+        
+        // Request speech recognition permission
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                DispatchQueue.main.async {
+                    self?.speechPermission = status
+                }
+                continuation.resume()
+            }
+        }
+    }
     
     var allPermissionsGranted: Bool {
         return micPermission == .granted && speechPermission == .authorized
@@ -46,6 +46,7 @@ class AudioManager: ObservableObject {
     @Published var audioLevel: CGFloat = 0.0
     @Published var currentSpeechText: String = ""
     @Published var recognizedSegments: [String] = []
+    @Published var isRecognizing: Bool = false
     
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -57,7 +58,10 @@ class AudioManager: ObservableObject {
     
     weak var speechQueue: SpeechQueue?
     
-    private var isRecognizing: Bool = false
+    private var lastSpeechTimer: Timer?
+    private var previousSpeechText: String = ""
+    private var useSilenceTimer = true
+    private var currentRecognitionId: UUID?
     
     func setupAudioEngine() {
         audioEngine = AVAudioEngine()
@@ -100,9 +104,9 @@ class AudioManager: ObservableObject {
         
         let decibels = 20 * log10(rms)
         
-        let normalizedDecibels = (decibels + 40) / 40
+        let normalizedDecibels = (decibels + 160) / 160
         
-        let scaledLevel = max(0, pow(normalizedDecibels, 1.2))
+        let scaledLevel = max(0, pow(normalizedDecibels, 1.5))
         
         DispatchQueue.main.async {
             self.audioLevel = CGFloat(scaledLevel)
@@ -112,7 +116,9 @@ class AudioManager: ObservableObject {
     func startSpeechRecognition() {
         guard !isRecognizing else { return }
         
+        useSilenceTimer = true
         isRecognizing = true
+        currentRecognitionId = UUID()
         setupSpeechRecognition()
     }
     
@@ -124,25 +130,59 @@ class AudioManager: ObservableObject {
         recognitionRequest?.shouldReportPartialResults = true
         
         guard let recognitionRequest = recognitionRequest else { return }
+        let recognitionId = currentRecognitionId
         
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] (result, error) in
-            guard let self = self else { return }
+            guard let self = self,
+                  let recognitionId = recognitionId,
+                  recognitionId == self.currentRecognitionId else { return }
             
             if let result = result {
                 let bestTranscription = result.bestTranscription.formattedString
                 DispatchQueue.main.async {
-                    self.currentSpeechText = bestTranscription
+                    if self.isRecognizing,
+                       recognitionId == self.currentRecognitionId,
+                       bestTranscription != self.previousSpeechText && !bestTranscription.isEmpty {
+                        self.currentSpeechText = bestTranscription
+                        self.previousSpeechText = bestTranscription
+                        
+                        if self.useSilenceTimer {
+                            self.resetSpeechTimer()
+                        }
+                    }
                 }
             }
         }
     }
     
+    private func resetSpeechTimer() {
+        lastSpeechTimer?.invalidate()
+        lastSpeechTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            let speech = self.currentSpeechText
+            if !speech.isEmpty {
+//                self.stopRecognition()
+                self.onPauseHandler?(speech)
+//                self.startSpeechRecognition()
+            }
+        }
+    }
+    
+    func cancelTimer() {
+        useSilenceTimer = false
+        lastSpeechTimer?.invalidate()
+        lastSpeechTimer = nil
+    }
+    
     func stopRecognition() {
         isRecognizing = false
+        currentRecognitionId = nil
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest?.endAudio()
         recognitionRequest = nil
+        self.previousSpeechText = ""
+        self.currentSpeechText = ""
     }
     
     func resumeListening() {
@@ -285,7 +325,7 @@ struct ContentView: View {
                         
                         Button(action: {
                             Task {
-                                await permissionManager.requestPermissions() // Request permissions
+                                await permissionManager.requestPermissions()
                             }
                         }) {
                             Text("Continue")
@@ -330,15 +370,15 @@ struct ContentView: View {
                                 .id(llm.speechQueue.currentSentence)
                                 .frame(maxWidth: 300)
                                 .padding(.horizontal, 48)
-                        } else if isFingerOnScreen && !audioManager.currentSpeechText.isEmpty {
+                        } else if !audioManager.currentSpeechText.isEmpty {
                             FadingText(text: audioManager.currentSpeechText)
                                 .foregroundColor(.primary)
                                 .multilineTextAlignment(.center)
                                 .frame(maxWidth: 300)
                                 .padding(.horizontal, 48)
-                        } else if isFingerOnScreen {
+                        } else if isFingerOnScreen || audioManager.isRecognizing {
                             FadingText(text: "Ask me anything")
-                                .foregroundColor(.primary)
+                                .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
                         } else {
                             FadingText(text: "Hold down to speak")
@@ -357,7 +397,7 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
-                        if !isFingerOnScreen {
+                        if !isFingerOnScreen, !llm.downloading {
                             hasAttemptedToSpeak = true
                             isFingerOnScreen = true
                             if permissionManager.allPermissionsGranted {
@@ -366,65 +406,82 @@ struct ContentView: View {
                         }
                     }
                     .onEnded { _ in
-                        isFingerOnScreen = false
-                        if permissionManager.allPermissionsGranted {
-                            handleFingerUp()
+                        if isFingerOnScreen {
+                            isFingerOnScreen = false
+                            if permissionManager.allPermissionsGranted {
+                                handleFingerUp()
+                            }
                         }
                     }
             )
-        }
-        .onChange(of: scenePhase) { newPhase in
-            if newPhase != .active {
-                isFingerOnScreen = false
-                handleFingerUp()
-            }
-        }
-        .onAppear {
-            let _ = isInstalled()
-            if llm.isSupportedCPU {
-                setupAudioManagerHandler()
-                connectAudioManagerToLLMEvaluator()
-                if permissionManager.allPermissionsGranted {
-                    audioManager.setupAudioEngine()
+            .onChange(of: scenePhase) { newPhase in
+                if newPhase != .active {
+                    isFingerOnScreen = false
+                    handleFingerUp()
                 }
             }
-            
-        }
-        .onChange(of: permissionManager.allPermissionsGranted) { granted in
-            if granted && llm.isSupportedCPU {
-                audioManager.setupAudioEngine()
-            } else {
-                audioManager.stopEverything()
+            .onAppear {
+                let _ = isInstalled()
+                if llm.isSupportedCPU {
+                    setupAudioManagerHandler()
+                    connectAudioManagerToLLMEvaluator()
+                    if permissionManager.allPermissionsGranted {
+                        audioManager.setupAudioEngine()
+                        audioManager.startSpeechRecognition()
+                    }
+                }
             }
+            .onChange(of: permissionManager.allPermissionsGranted) { granted in
+                if granted && llm.isSupportedCPU {
+                    audioManager.setupAudioEngine()
+                    audioManager.startSpeechRecognition()
+                } else {
+                    audioManager.stopEverything()
+                }
+            }
+            .onChange(of: llm.progress) { _ in
+                let _ = isInstalled()
+            }
+            .task {
+                await loadLLM()
+            }
+            .ignoresSafeArea(.all)
         }
-        .onChange(of: llm.progress) { _ in
-            let _ = isInstalled()
-        }
-        .task {
-            await loadLLM()
-        }
-        .ignoresSafeArea(.all)
     }
     
+    @State var fingerDownInterval: TimeInterval?
+    
     private func handleFingerDown() {
+        fingerDownInterval = Date().timeIntervalSince1970
         playHaptic()
         llm.cancelGeneration()
         audioManager.speechQueue?.cancelSpeech()
-        audioManager.resumeListening()
+        audioManager.cancelTimer()
     }
     
     private func handleFingerUp() {
-        if !audioManager.currentSpeechText.isEmpty {
-            generate(with: audioManager.currentSpeechText)
+        if let interval = fingerDownInterval {
+            let timeInterval = Date().timeIntervalSince1970 - interval
+            if timeInterval < 0.2 {
+                audioManager.stopRecognition()
+                audioManager.startSpeechRecognition()
+            }
+            else {
+                if !audioManager.currentSpeechText.isEmpty {
+                    generate(with: audioManager.currentSpeechText)
+                }
+            }
         }
-        audioManager.stopRecognition()
     }
     
     private func setupAudioManagerHandler() {
+        audioManager.onPauseHandler = { text in
+            generate(with: text)
+        }
+        
         audioManager.onNewSpeechDetected = {
             llm.cancelGeneration()
             audioManager.speechQueue?.cancelSpeech()
-            audioManager.resumeListening()
         }
     }
     
@@ -434,6 +491,7 @@ struct ContentView: View {
     }
     
     private func generate(with segment: String) {
+        audioManager.stopRecognition()
         if !segment.isEmpty {
             playHaptic()
             isGenerating = true
@@ -455,6 +513,7 @@ struct ContentView: View {
                     }
                 }
                 isGenerating = false
+                audioManager.startSpeechRecognition()
             }
         }
     }
@@ -481,7 +540,6 @@ struct ContentView: View {
         return installed && llm.progress == 1
     }
 }
-
 
 #Preview {
     ContentView()
